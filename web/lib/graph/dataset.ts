@@ -170,8 +170,7 @@ export async function readDataset(
         r.pass_through === '' || r.pass_through === null
           ? null
           : num(r, 'pass_through', context),
-      seedReach: integer(r, 'seed_reach', context),
-      matchedShare: num(r, 'matched_2d_share', context, 1),
+      seedSources: integer(r, 'seed_sources', context),
     };
   });
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));

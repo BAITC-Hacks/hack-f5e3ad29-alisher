@@ -80,7 +80,7 @@ export function NodeCard({
           inTx: node.inTx,
           outTx: node.outTx,
           passThrough: node.passThrough,
-          seedReach: node.seedReach,
+          seedSources: node.seedSources,
         }),
         signal: controller.signal,
       });
@@ -204,7 +204,7 @@ export function NodeCard({
               </li>
             )}
             <li>
-              Связи с исходными узлами: {formatNumber(node.seedReach)}.
+              Связи с исходными узлами: {formatNumber(node.seedSources)}.
               {node.isSeed
                 ? ' Узел сам входит в исходный список.'
                 : ` Число переходов от исходного узла: ${node.depth}.`}
@@ -289,7 +289,7 @@ export function NodeCard({
         </div>
         <div>
           <dt>Связи с исходными узлами</dt>
-          <dd>{node.seedReach}</dd>
+          <dd>{node.seedSources}</dd>
         </div>
       </dl>
       <div className="node-card-actions">

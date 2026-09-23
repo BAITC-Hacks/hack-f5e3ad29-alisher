@@ -1,5 +1,7 @@
 # Граф денег
 
+Демо: https://hackalem-ai-finances-track.onrender.com
+
 ## Аналитика (`analysis/`)
 
 Нужен Python 3.9+. Сеть, LLM и внешние данные не нужны.
@@ -30,3 +32,33 @@ analysis/.venv/bin/python -m unittest discover -s analysis/tests -v
 ```
 
 Параметры, методика и описание колонок — в [analysis/README.md](analysis/README.md).
+
+## Веб-интерфейс (`web/`)
+
+Нужен Node.js 20+.
+
+Из корня репозитория:
+
+```bash
+cd web
+npm install
+cp .env.example .env.local
+npm run dev
+```
+
+Откройте [localhost:3000](http://localhost:3000).
+
+Данные для экрана лежат в `web/public/data/`: три Parquet и три CSV из аналитики. После нового запуска `analysis/run.py` скопируйте свежие CSV:
+
+```bash
+cp analysis/out/{nodes_roles,clusters,top_nodes}.csv web/public/data/
+```
+
+Граф работает без ключа. Для AI-функций задайте `OPENAI_API_KEY` в `web/.env.local`. Модели можно поменять через `OPENAI_MODEL` и `OPENAI_BRIEF_MODEL`.
+
+Тесты:
+
+```bash
+cd web
+npm test
+```

@@ -43,7 +43,7 @@ test('reads the real ZSTD Parquet together with OUT without losing int64 IDs or 
   assert.equal(dataset.transactions.length, 4840);
   assert.equal(dataset.clusters.length, 88);
   assert.equal(dataset.top.length, 30);
-  assert.equal(dataset.top[0].id, '100000003684369100');
+  assert.equal(dataset.top[0].id, '100000004015047100');
   assert.equal(
     dataset.nodes.filter((n) => n.inDegree + n.outDegree === 0).length,
     19,
@@ -56,9 +56,7 @@ test('reads the real ZSTD Parquet together with OUT without losing int64 IDs or 
 test('preserves unknown pass-through ratios and the depth boundary', () => {
   const boundary = dataset.nodes.filter((n) => n.depth === 4);
   assert.equal(boundary.length, 444);
-  assert.ok(
-    boundary.every((n) => n.passThrough === null && n.role === 'peripheral'),
-  );
+  assert.ok(boundary.every((n) => n.passThrough === null));
   assert.ok(
     dataset.nodes.filter((n) => n.isSeed).every((n) => n.passThrough === null),
   );

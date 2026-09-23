@@ -15,7 +15,7 @@ const numericFields = [
   'outDegree',
   'inTx',
   'outTx',
-  'seedReach',
+  'seedSources',
 ] as const;
 
 function isBriefNode(
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
     incomingTransfers: node.inTx,
     outgoingTransfers: node.outTx,
     outgoingToIncomingRatio: node.passThrough,
-    reachableSeedCount: node.seedReach,
+    reachableSeedCount: node.seedSources,
   };
 
   try {

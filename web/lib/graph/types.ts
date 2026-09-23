@@ -24,8 +24,7 @@ export interface MoneyNode {
   inTx: number;
   outTx: number;
   passThrough: number | null;
-  seedReach: number;
-  matchedShare: number;
+  seedSources: number;
 }
 
 export interface MoneyEdge {
