@@ -1,0 +1,11 @@
+# Python
+.venv
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Docs
+docs
+
+# Output
+out
