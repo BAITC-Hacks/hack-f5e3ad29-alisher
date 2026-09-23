@@ -1,42 +1,21 @@
 import type { Metadata } from 'next';
-import { Geist, Geist_Mono, Inter } from 'next/font/google';
-import { cn } from '@/lib/utils';
+import '@fontsource/inter/latin-400.css';
+import '@fontsource/inter/latin-500.css';
+import '@fontsource/inter/latin-600.css';
+import '@fontsource/inter/cyrillic-400.css';
+import '@fontsource/inter/cyrillic-500.css';
+import '@fontsource/inter/cyrillic-600.css';
 import './globals.css';
 
-const inter = Inter({
-  subsets: ['latin', 'latin-ext', 'cyrillic-ext'],
-  variable: '--font-inter',
-});
-
-const geistSans = Geist({
-  variable: '--font-geist-sans',
-  subsets: ['latin'],
-});
-
-const geistMono = Geist_Mono({
-  variable: '--font-geist-mono',
-  subsets: ['latin'],
-});
-
 export const metadata: Metadata = {
-  title: 'HackAlem AI',
+  title: 'Граф денег — анализ переводов',
   description:
-    'An AI text assistant: questions, ideas, and answers in one chat.',
+    'Интерактивный граф переводов: роли узлов, кластеры и объяснимая очередь проверки.',
 };
 
 export default function RootLayout({ children }: LayoutProps<'/'>) {
   return (
-    <html
-      lang="en"
-      className={cn(
-        'h-full',
-        'antialiased',
-        geistSans.variable,
-        geistMono.variable,
-        'font-sans',
-        inter.variable,
-      )}
-    >
+    <html lang="ru" className="h-full antialiased font-sans">
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );

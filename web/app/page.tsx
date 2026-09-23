@@ -1,5 +1,5 @@
-import { Chat } from '@/components/chat';
+import { MoneyGraph } from '@/components/graph/money-graph';
 
 export default function Home() {
-  return <Chat />;
+  return <MoneyGraph />;
 }
