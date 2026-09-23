@@ -159,13 +159,13 @@ def assign_clusters(graph):
 # ---------------------------------------------------------------- деньги seed
 
 def seed_money(tx, nodes, blocked=()):
-    """Деньги seed по методу haircut с учётом дат (README, «Деньги seed»).
+    """Дневной haircut с причинным порядком между сильносвязными компонентами.
 
-    Счёт клиента — котёл из наблюдаемых поступлений. Перевод уносит из котла долю
-    денег каждого seed, равную их доле в котле. Если перевод больше котла, недостающее —
-    невидимые деньги: у seed это его собственные деньги seed, у остальных — чистые.
-    Порядок внутри дня неизвестен, поэтому поступления дня доступны переводам того же дня.
-    Переводы узлов из blocked исключаются (сценарий блокировки).
+    Между компонентами допускается передача в тот же день. Внутри циклической
+    компоненты все расходы считаются до её внутренних приходов: взаимные переводы
+    не финансируют сами себя. Это явное допущение при неизвестном времени суток.
+    Seed маркирует прежде неатрибутированную часть своего выхода собственной меткой;
+    уже известные метки сохраняются. Остатки — бухгалтерия модели, не остатки банка.
     """
     gids = nodes.gid.to_numpy()
     position = pd.Series(np.arange(len(gids)), index=gids)
@@ -179,41 +179,79 @@ def seed_money(tx, nodes, blocked=()):
     pool, pool_seed = np.zeros(n), np.zeros((n, s))
     received, sent = np.zeros((n, s)), np.zeros((n, s))
     origin, unobserved, tx_seed = np.zeros(n), np.zeros(n), np.zeros(len(tx))
+    cycle_in = np.zeros(n)
     for day in np.unique(days):
         rows = np.flatnonzero(days == day)
         u, v, a = src[rows], dst[rows], amount[rows]
-        out_today, in_today = np.bincount(u, a, n), np.bincount(v, a, n)
-        available = pool + in_today
-        funded = np.maximum(available, out_today)
-        by_seed = own[u] >= 0
-        incoming = np.zeros((n, s))
-        # Цепочки внутри дня зависят друг от друга: итерация до неподвижной точки.
-        for _ in range(200):
-            share = np.divide(pool_seed + incoming, funded[:, None], out=np.zeros((n, s)),
-                              where=funded[:, None] > 0)
-            from_pool = a[:, None] * share[u]
-            own_part = np.where(by_seed, a * (1 - share[u].sum(axis=1)), 0.0)
+        daily_graph = nx.DiGraph()
+        daily_graph.add_edges_from(sorted(set(zip(u.tolist(), v.tolist()))))
+        components = sorted(nx.strongly_connected_components(daily_graph), key=min)
+        dag = nx.condensation(daily_graph, scc=components)
+        membership = dag.graph["mapping"]
+        component_rows = [[] for _ in components]
+        for index, source in enumerate(u):
+            component_rows[membership[int(source)]].append(index)
+        out_today = np.bincount(u, a, n)
+        # Компоненты связаны DAG; внутри каждой всё списываем перед зачислением.
+        for component in nx.lexicographical_topological_sort(dag):
+            local = np.asarray(component_rows[component], dtype=int)
+            if not len(local):
+                continue
+            senders, targets, amounts = u[local], v[local], a[local]
+            active = np.unique(senders)
+            available = pool[active].copy()
+            funded = np.maximum(available, out_today[active])
+            shares = np.divide(pool_seed[active], funded[:, None],
+                               out=np.zeros((len(active), s)), where=funded[:, None] > 0)
+            from_pool = amounts[:, None] * shares[np.searchsorted(active, senders)]
+            by_seed = own[senders] >= 0
+            own_part = np.where(by_seed, np.maximum(amounts - from_pool.sum(axis=1), 0.0), 0.0)
             carried = from_pool.copy()
-            carried[by_seed, own[u[by_seed]]] += own_part[by_seed]
-            update = np.zeros((n, s))
-            np.add.at(update, v, carried)
-            converged = np.abs(update - incoming).max(initial=0.0) < 1e-6
-            incoming = update
-            if converged:
-                break
-        require(converged, f"Деньги seed: расчёт за {pd.Timestamp(day).date()} не сошёлся")
-        leaving = np.zeros((n, s))
-        np.add.at(leaving, u, from_pool)
-        pool_seed = np.maximum(pool_seed + incoming - leaving, 0.0)
-        pool = funded - out_today
-        received += incoming
-        np.add.at(sent, u, carried)
-        origin += np.bincount(u, own_part, n)
-        unobserved += np.where(own < 0, out_today - available, 0.0).clip(min=0.0)
-        tx_seed[rows] = carried.sum(axis=1)
-    kept = received.sum(axis=1) - (sent.sum(axis=1) - origin)
-    return {"received": received, "sent": sent, "origin": origin, "kept": np.maximum(kept, 0.0),
-            "unobserved": unobserved, "tx": tx.assign(seed_kzt=tx_seed)}
+            carried[by_seed, own[senders[by_seed]]] += own_part[by_seed]
+            unobserved[active] += np.where(own[active] < 0, funded - available, 0.0)
+            pool[active] = funded - out_today[active]
+            np.add.at(pool_seed, senders, -from_pool)
+            np.add.at(pool, targets, amounts)
+            np.add.at(pool_seed, targets, carried)
+            np.add.at(received, targets, carried)
+            np.add.at(sent, senders, carried)
+            np.add.at(origin, senders, own_part)
+            internal = np.array([membership[int(i)] == component for i in targets])
+            np.add.at(cycle_in, targets[internal], amounts[internal])
+            tx_seed[rows[local]] = carried.sum(axis=1)
+        require((pool_seed >= -1e-6).all() and (pool_seed.sum(axis=1) <= pool + 1e-6).all(),
+                "Деньги seed: нарушен дневной баланс модели")
+    kept = pool_seed.sum(axis=1).clip(min=0.0)
+    require(np.allclose(kept, received.sum(axis=1) - sent.sum(axis=1) + origin, rtol=0, atol=1e-6),
+            "Деньги seed: не сходится баланс по узлам")
+    require(abs(kept.sum() - origin.sum()) < 0.01, "Деньги seed: не сходится общий баланс")
+    return {"received": received, "sent": sent, "origin": origin, "kept": kept,
+            "unobserved": unobserved, "cycle_in": cycle_in, "tx": tx.assign(seed_kzt=tx_seed)}
+
+
+def seed_attribution(money, nodes, gids):
+    """Отделяет собственные возвраты seed от денег других seed для роли и приоритета."""
+    positions = pd.Series(np.arange(len(nodes)), index=nodes.gid)[gids].to_numpy()
+    received, sent = money["received"][positions], money["sent"][positions]
+    eligible_in, eligible_out = received.copy(), sent.copy()
+    seed_columns = {int(gid): column for column, gid in enumerate(nodes.gid[nodes.is_seed])}
+    for row, gid in enumerate(gids):
+        if int(gid) in seed_columns:
+            column = seed_columns[int(gid)]
+            eligible_in[row, column] = 0.0
+            eligible_out[row, column] = 0.0
+    eligible_sum = eligible_in.sum(axis=1)
+    return pd.DataFrame({
+        "seed_in_total_kzt": received.sum(axis=1),
+        "seed_in_kzt": eligible_sum,
+        "seed_self_return_kzt": received.sum(axis=1) - eligible_sum,
+        "seed_out_kzt": sent.sum(axis=1),
+        "seed_forwarded_kzt": eligible_out.sum(axis=1),
+        "seed_origin_kzt": money["origin"][positions],
+        "seed_kept_kzt": money["kept"][positions],
+        "seed_sources": (eligible_in >= MIN_TX_KZT).sum(axis=1).astype("int64"),
+        "same_day_cycle_in_kzt": money["cycle_in"][positions],
+    })
 
 
 # ---------------------------------------------------------------- признаки узлов
@@ -293,15 +331,9 @@ def basic_features(graph, nodes, edges, tx):
     # Деньги seed.
     money = seed_money(tx, nodes)
     position = pd.Series(np.arange(len(nodes)), index=nodes.gid)[df.gid].to_numpy()
-    received, sent = money["received"][position], money["sent"][position]
-    df["seed_in_kzt"] = received.sum(axis=1)
-    df["seed_out_kzt"] = sent.sum(axis=1)
-    df["seed_origin_kzt"] = money["origin"][position]
-    df["seed_kept_kzt"] = money["kept"][position]
-    df["seed_sources"] = (received >= MIN_TX_KZT).sum(axis=1).astype("int64")
+    df = pd.concat([df, seed_attribution(money, nodes, df.gid)], axis=1)
     df["seed_share_in"] = (df.seed_in_kzt / in_kzt).fillna(0).clip(0, 1)
-    forwarded = df.seed_out_kzt - df.seed_origin_kzt
-    df["seed_forwarded_share"] = (forwarded / df.seed_in_kzt.replace(0, np.nan)).fillna(0).clip(0, 1)
+    df["seed_forwarded_share"] = (df.seed_forwarded_kzt / df.seed_in_kzt.replace(0, np.nan)).fillna(0).clip(0, 1)
     df["external_share"] = (money["unobserved"][position] / df.out_kzt.replace(0, np.nan)).where(
         ~df.is_seed).clip(0, 1)
 
@@ -425,7 +457,7 @@ def data_gap(r):
     if r.role == "terminal" and r.early_in_share < 0.8:
         return "поздние поступления: запросить переводы за август"
     if r.seed_kept_kzt >= MATERIAL_KZT:
-        return "деньги seed остались на счёте: проверить остаток, межбанк и наличные"
+        return "модельный остаток seed: проверить остаток, межбанк и наличные"
     return ""
 
 
@@ -484,10 +516,10 @@ def evidence(r):
         if r.role == "consolidator":
             text = f"{head} Сбор: {payers(r.in_deg)}, {transfers(r.in_tx)}, {money(r.in_kzt)}."
         elif r.role == "terminal":
-            text = (f"{head} Из {r.similar_n} похожих узлов 1–3 колена {pct(r.similar_p_terminal)} "
-                    f"не отдали деньги дальше. Получил {money(r.in_kzt)}.")
+            text = (f"{head} У {pct(r.similar_p_terminal)} из {r.similar_n} похожих узлов 1–3 колена "
+                    f"видимый выход ≤10% входа. Получил {money(r.in_kzt)}.")
         else:
-            text = (f"{head} Из {r.similar_n} похожих узлов деньги оставили {pct(r.similar_p_terminal)} — "
+            text = (f"{head} Из {r.similar_n} похожих узлов выход ≤10% у {pct(r.similar_p_terminal)} — "
                     f"мало для вывода. Получил {money(r.in_kzt)}.")
     elif r.role == "coordinator":
         others = "других " if r.is_seed else ""
@@ -514,6 +546,8 @@ def evidence(r):
         text = (f"Периферия: получил {money(r.in_kzt)} ({transfers(r.in_tx)}), отдал {money(r.out_kzt)}"
                 f"{ratio} {plural(r.out_deg, 'получателю', 'получателям', 'получателям')};{seed} "
                 "признаков ролей не выявлено.")
+    if r.depth < 4 and r.in_deg + r.out_deg > 0:
+        text = f"Гипотеза. {text}"
     return f"{text} Seed: вход неполон." if r.is_seed else text
 
 
@@ -626,25 +660,32 @@ def top_outputs(df, top_n):
 def blocking(order, graph, tx, nodes, scenario=""):
     """Что будет с сетью, если заблокировать первые N из order (их исходящие переводы не происходят).
 
-    seed_kzt_to_others_share — доля всех денег seed, осевшая у остальных не-seed клиентов;
-    seed_kzt_held_share — доля, которая без блокировки осела бы у самих заблокированных.
-    Знаменатель одинаков для всех N, поэтому строки можно сравнивать.
+    Все остатки берутся ПОСЛЕ блокировки; held_before вынесен отдельно.
+    Знаменатель — выпуск базового сценария. Повторное финансирование seed может
+    изменить выпуск, поэтому доли суммируются в origin_ratio, а не обязательно в 1.
     """
     base = seed_money(tx, nodes)
     total = base["origin"].sum()
+    fraction = lambda value: float(value / total) if total > 0 else 0.0
     rows = []
     for k in (0,) + RESILIENCE_TOP:
         removed = set(order[:k])
         blocked = nodes.gid.isin(removed).to_numpy()
+        remaining_seeds = nodes.is_seed.to_numpy() & ~blocked
         others = ~nodes.is_seed.to_numpy() & ~blocked
         after = seed_money(tx, nodes, blocked=removed) if k else base
         rest = graph.copy()
         rest.remove_nodes_from(removed)
         components = [len(c) for c in nx.weakly_connected_components(rest)]
-        rows.append((scenario, k, ";".join(str(gid) for gid in order[:k]), max(components), len(components),
-                     after["kept"][others].sum() / total, base["kept"][blocked].sum() / total))
+        rows.append((scenario, len(removed), ";".join(str(gid) for gid in order[:k]),
+                     max(components, default=0), len(components),
+                     fraction(after["kept"][others].sum()), fraction(after["kept"][blocked].sum()),
+                     fraction(base["kept"][blocked].sum()), fraction(after["kept"][remaining_seeds].sum()),
+                     fraction(after["origin"].sum()), float(total), float(after["origin"].sum())))
     return pd.DataFrame(rows, columns=["scenario", "removed_top_n", "removed_gids", "largest_component",
-                                       "n_components", "seed_kzt_to_others_share", "seed_kzt_held_share"])
+                                       "n_components", "seed_kzt_to_others_share", "seed_kzt_held_share",
+                                       "seed_kzt_held_before_share", "seed_kzt_at_seeds_share",
+                                       "seed_kzt_origin_ratio", "seed_kzt_origin_before", "seed_kzt_origin_after"])
 
 
 def resilience(df, graph, tx, nodes):
@@ -707,9 +748,16 @@ def validate_outputs(df, clusters, top, nodes, edges, top_n):
     require(df.loc[df.is_seed | df.depth.eq(4) | df.in_kzt.eq(0), "pass_through"].isna().all(),
             "Отношение out/in при неполном наблюдении")
     tol = 0.01
-    require(df.seed_in_kzt.ge(-tol).all() and (df.seed_in_kzt <= df.in_kzt + tol).all()
+    require(df.seed_in_kzt.ge(-tol).all() and (df.seed_in_total_kzt <= df.in_kzt + tol).all()
             and (df.seed_out_kzt <= df.out_kzt + tol).all() and df.seed_kept_kzt.ge(-tol).all(),
             "Деньги seed вне наблюдаемых сумм")
+    require(np.allclose(df.seed_in_total_kzt, df.seed_in_kzt + df.seed_self_return_kzt, rtol=0, atol=tol),
+            "Собственные возвраты seed не отделены от входа")
+    require(df.seed_self_return_kzt.ge(-tol).all()
+            and df.loc[~df.is_seed, "seed_self_return_kzt"].abs().le(tol).all(), "Неверный собственный возврат")
+    require((df.seed_forwarded_kzt <= df.seed_in_kzt + tol).all(), "Переслано больше полученного")
+    require(np.allclose(df.seed_kept_kzt, df.seed_in_total_kzt - df.seed_out_kzt + df.seed_origin_kzt,
+                        rtol=0, atol=tol), "Не сходится баланс денег seed по узлам")
     require(df.loc[~df.is_seed, "seed_origin_kzt"].abs().le(tol).all(), "Деньги seed возникли не у seed")
     require(abs(df.seed_origin_kzt.sum() - df.seed_kept_kzt.sum()) <= 1.0, "Деньги seed не сохраняются")
     require(clusters.cluster_id.is_unique and set(df.cluster_id) == set(clusters.cluster_id), "Кластеры не согласованы")
@@ -738,8 +786,25 @@ def validate_outputs(df, clusters, top, nodes, edges, top_n):
     require(np.allclose(df.priority_score, recomputed, rtol=0, atol=2e-9), "Формула приоритета не сходится")
 
 
+def validate_resilience(table):
+    fields = ["seed_kzt_to_others_share", "seed_kzt_held_share", "seed_kzt_held_before_share",
+              "seed_kzt_at_seeds_share", "seed_kzt_origin_ratio", "seed_kzt_origin_before", "seed_kzt_origin_after"]
+    require(np.isfinite(table[fields]).all().all() and table[fields].ge(0).all().all(),
+            "Некорректные значения сценария блокировки")
+    partition = table.seed_kzt_to_others_share + table.seed_kzt_held_share + table.seed_kzt_at_seeds_share
+    require(np.allclose(partition, table.seed_kzt_origin_ratio, rtol=0, atol=2e-9),
+            "Не сходится баланс долей после блокировки")
+    denominator = table.seed_kzt_origin_before.replace(0, np.nan)
+    require(np.allclose(table.seed_kzt_origin_ratio, (table.seed_kzt_origin_after / denominator).fillna(0),
+                        rtol=0, atol=2e-9), "Неверный знаменатель сценария блокировки")
+    require(table.loc[table.seed_kzt_origin_before.eq(0), "seed_kzt_origin_after"].eq(0).all(),
+            "Нулевой знаменатель при ненулевом выпуске")
+
+
 def write_outputs(df, clusters, top, extra, out_dir, nodes, edges, top_n):
     validate_outputs(df, clusters, top, nodes, edges, top_n)
+    if "resilience.csv" in extra:
+        validate_resilience(extra["resilience.csv"])
     out_dir.mkdir(parents=True, exist_ok=True)
     tables = {"nodes_roles.csv": df, "clusters.csv": clusters, "top_nodes.csv": top, **extra}
     for name, frame in tables.items():
@@ -747,6 +812,8 @@ def write_outputs(df, clusters, top, extra, out_dir, nodes, edges, top_n):
     reread = [pd.read_csv(out_dir / name, dtype={"top_gids": str})
               for name in ("nodes_roles.csv", "clusters.csv", "top_nodes.csv")]
     validate_outputs(*reread, nodes, edges, top_n)
+    if "resilience.csv" in extra:
+        validate_resilience(pd.read_csv(out_dir / "resilience.csv"))
 
 
 def main():
@@ -776,12 +843,12 @@ def main():
     backtest = boundary_backtest(df)
     cut = extra["resilience.csv"].query("scenario == 'top_new'").set_index("removed_top_n")
     print(f"Вход: узлы={len(nodes)}, рёбра={len(edges)}, транзакции={len(tx)}, seed={int(nodes.is_seed.sum())}")
-    print(f"Деньги seed: выпущено {money(origin)}; осело по коленам: "
+    print(f"Деньги seed: маркировано {money(origin)}; модельный остаток по коленам: "
           + ", ".join(f"{depth}: {pct(share)}" for depth, share in by_depth.items()))
     print(f"Роли: {df.role.value_counts().to_dict()}")
-    print(f"Топ-{len(top)}: денег seed {money(top.seed_in_kzt.sum())}; seed в топе: {int(top.is_seed.sum())}")
+    print(f"Топ-{len(top)}: сумма учтённых поступлений seed {money(top.seed_in_kzt.sum())}; seed в топе: {int(top.is_seed.sum())}")
     print(f"4-е колено: проверка на 3-м колене — выбрано {backtest['chosen']} из {backtest['test_nodes']}, "
-          f"конечных среди выбранных {pct(backtest['precision'])} при базовой доле {pct(backtest['base_rate'])}")
+          f"с малым видимым выходом {pct(backtest['precision'])} при базовой доле {pct(backtest['base_rate'])}")
     print("Блокировка N новых счетов из топа: денег seed у остальных / у заблокированных — "
           + ", ".join(f"N={k}: {pct(cut.loc[k, 'seed_kzt_to_others_share'])} / {pct(cut.loc[k, 'seed_kzt_held_share'])}"
                       for k in RESILIENCE_TOP))

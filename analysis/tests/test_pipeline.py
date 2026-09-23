@@ -5,7 +5,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -153,6 +155,84 @@ class SeedMoneyTest(unittest.TestCase):
         _, _, received = self.run_money(rows, blocked={10})
         self.assertEqual(received(11), 0)
 
+    def test_two_seeds_same_day_cycle_has_funding_and_preserves_labels(self):
+        result, at, _ = self.run_money([(1, 2, "2026-07-01", 100_000), (2, 1, "2026-07-01", 100_000)])
+        self.assertEqual(result["origin"].sum(), 200_000)
+        self.assertEqual(result["kept"].sum(), 200_000)
+        np.testing.assert_allclose(result["received"][at[1]], [0, 100_000])
+        np.testing.assert_allclose(result["received"][at[2]], [100_000, 0])
+
+    def test_single_seed_cycle_cannot_finance_itself(self):
+        result, at, received = self.run_money([(1, 10, "2026-07-01", 100_000),
+                                             (10, 1, "2026-07-01", 100_000),
+                                             (10, 11, "2026-07-02", 100_000)])
+        self.assertEqual(result["origin"].sum(), 100_000)
+        self.assertEqual(result["unobserved"][at[10]], 100_000)
+        self.assertEqual(received(1), 0)
+        self.assertEqual(result["kept"][at[11]], 100_000)
+        self.assertEqual(result["cycle_in"].sum(), 200_000)
+
+    def test_seed_self_return_is_not_another_source(self):
+        result, _, _ = self.run_money([(1, 10, "2026-07-01", 100_000),
+                                      (10, 1, "2026-07-02", 100_000),
+                                      (2, 1, "2026-07-02", 50_000),
+                                      (1, 11, "2026-07-03", 150_000)])
+        row = pipeline.seed_attribution(result, self.NODES, pd.Series([1])).iloc[0]
+        self.assertEqual(row.seed_in_total_kzt, 150_000)
+        self.assertEqual(row.seed_self_return_kzt, 100_000)
+        self.assertEqual(row.seed_in_kzt, 50_000)
+        self.assertEqual(row.seed_sources, 1)
+        self.assertEqual(row.seed_forwarded_kzt, 50_000)
+        hub = features(is_seed=True, in_deg=3, out_deg=3, seed_sources=row.seed_sources)
+        self.assertNotEqual(pipeline.choose_role(hub)[0], "coordinator")
+
+    def test_unattributed_money_gets_label_only_when_leaving_seed(self):
+        result, at, received = self.run_money([(10, 1, "2026-07-01", 100_000),
+                                             (1, 11, "2026-07-02", 100_000)])
+        self.assertEqual(received(1), 0)
+        self.assertEqual(result["origin"][at[1]], 100_000)
+        self.assertEqual(received(11), 100_000)
+
+    def test_blocking_reports_after_balance_separately_from_before(self):
+        tx = pd.DataFrame({"src": [1, 10], "dst": [10, 11], "sum_kzt": [100_000., 100_000.],
+                           "date": pd.to_datetime(["2026-07-01", "2026-07-02"])})
+        edges = tx.assign(n_tx=1)
+        graph = pipeline.build_graph(edges, self.NODES)
+        with patch.object(pipeline, "RESILIENCE_TOP", (1, 2)):
+            table = pipeline.blocking([10, 1], graph, tx, self.NODES).set_index("removed_top_n")
+        self.assertEqual(table.loc[1, "seed_kzt_held_before_share"], 0)
+        self.assertEqual(table.loc[1, "seed_kzt_held_share"], 1)
+        self.assertEqual(table.loc[1, "seed_kzt_to_others_share"], 0)
+        # После добавления seed к блокировке исчезает источник: удержанное уменьшается.
+        self.assertEqual(table.loc[2, "seed_kzt_held_share"], 0)
+        pipeline.validate_resilience(table)
+
+    def test_zero_seed_funding_and_removal_of_entire_graph(self):
+        tx = pd.DataFrame({"src": [10], "dst": [11], "sum_kzt": [100_000.],
+                           "date": pd.to_datetime(["2026-07-01"])})
+        graph = pipeline.build_graph(tx.assign(n_tx=1), self.NODES)
+        with patch.object(pipeline, "RESILIENCE_TOP", (len(self.NODES),)):
+            table = pipeline.blocking(self.NODES.gid.tolist(), graph, tx, self.NODES)
+        pipeline.validate_resilience(table)
+        self.assertEqual(table.iloc[-1].largest_component, 0)
+        self.assertTrue(table.seed_kzt_origin_after.eq(0).all())
+
+    def test_random_cycles_preserve_node_and_source_balances(self):
+        rng = np.random.default_rng(17)
+        for _ in range(20):
+            rows = [(int(rng.choice(self.NODES.gid)), int(rng.choice(self.NODES.gid)),
+                     f"2026-07-0{rng.integers(1, 5)}", int(rng.integers(1, 30))*5000)
+                    for _ in range(25)]
+            result, _, _ = self.run_money(rows)
+            self.assertAlmostEqual(result["origin"].sum(), result["kept"].sum(), delta=0.001)
+            balance = result["received"].copy() - result["sent"]
+            balance[0, 0] += result["origin"][0]
+            balance[1, 1] += result["origin"][1]
+            self.assertTrue((balance >= -1e-6).all())
+            np.testing.assert_allclose(balance.sum(axis=1), result["kept"], atol=1e-6)
+            flow = result["tx"]
+            self.assertTrue(flow.seed_kzt.between(-1e-6, flow.sum_kzt + 1e-6).all())
+
 
 class DatasetTest(unittest.TestCase):
     @classmethod
@@ -198,7 +278,8 @@ class DatasetTest(unittest.TestCase):
     def test_seed_money_is_conserved_and_bounded(self):
         df = self.df
         self.assertAlmostEqual(df.seed_origin_kzt.sum(), df.seed_kept_kzt.sum(), delta=1.0)
-        self.assertTrue((df.seed_in_kzt <= df.in_kzt + 0.01).all())
+        self.assertTrue((df.seed_in_total_kzt <= df.in_kzt + 0.01).all())
+        np.testing.assert_allclose(df.seed_in_total_kzt, df.seed_in_kzt + df.seed_self_return_kzt, atol=0.01)
         self.assertTrue((df.seed_out_kzt <= df.out_kzt + 0.01).all())
         self.assertTrue(df.loc[~df.is_seed, "seed_origin_kzt"].abs().le(0.01).all())
         seed_out = self.tx[self.tx.src.isin(self.nodes.gid[self.nodes.is_seed])].sum_kzt.sum()
@@ -249,13 +330,15 @@ class DatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "внутренний оборот"):
             pipeline.validate_outputs(self.df, bad_clusters, self.top, self.nodes, self.edges, 30)
 
-    def test_blocking_more_nodes_never_lets_more_seed_money_through(self):
+    def test_blocking_balances_are_computed_from_same_scenario(self):
         table = pipeline.resilience(self.df, self.graph, self.tx, self.nodes)
         self.assertEqual(set(table.scenario), {"top", "top_new"})
-        for _, scenario in table.groupby("scenario"):
-            self.assertTrue(scenario.seed_kzt_to_others_share.is_monotonic_decreasing)
-            self.assertTrue(scenario.seed_kzt_held_share.is_monotonic_increasing)
-        self.assertTrue(table[["seed_kzt_to_others_share", "seed_kzt_held_share"]].stack().between(0, 1).all())
+        pipeline.validate_resilience(table)
+        for row in table.itertuples(index=False):
+            removed = {int(gid) for gid in row.removed_gids.split(";") if gid}
+            after = pipeline.seed_money(self.tx, self.nodes, removed)
+            held = after["kept"][self.nodes.gid.isin(removed)].sum()
+            self.assertAlmostEqual(row.seed_kzt_held_share, held / row.seed_kzt_origin_before)
         new = table[table.scenario.eq("top_new") & table.removed_top_n.gt(0)]
         seeds = set(self.nodes.gid[self.nodes.is_seed])
         self.assertFalse(any(int(gid) in seeds for gids in new.removed_gids for gid in gids.split(";")))
