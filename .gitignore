@@ -6,4 +6,12 @@ __pycache__/
 
 # Output
 out
+!analysis/out/
+analysis/out/*
+!analysis/out/nodes_roles.csv
+!analysis/out/clusters.csv
+!analysis/out/top_nodes.csv
+!analysis/out/resilience.csv
+!analysis/out/data_requests.csv
+!analysis/out/edges_flow.csv
 !docs/starter/out
