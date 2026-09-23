@@ -798,9 +798,15 @@
 .node-identity .muted {
   font-size: 10px;
 }
+.node-role-copy {
+  min-width: 0;
+}
+.node-role-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
 .rank-badge {
-  margin-left: auto;
-  align-self: flex-start;
   white-space: nowrap;
   font-size: 9px;
   padding: 3px 5px;
@@ -808,6 +814,21 @@
   color: #c7b2f3;
   border-radius: 4px;
   border: 1px solid #493864;
+}
+.node-why-button {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 6px 9px;
+  border: 1px solid #665487;
+  border-radius: 6px;
+  background: #322748;
+  color: #e4d6ff;
+  font-size: 11px;
+  cursor: pointer;
+}
+.node-why-button:hover,
+.node-why-button[aria-expanded='true'] {
+  background: #45345f;
 }
 .node-id {
   display: flex;
@@ -925,13 +946,7 @@
   border: 1px solid #2a384c;
   border-radius: 6px;
   padding: 11px 12px;
-  margin-top: 15px;
-}
-.node-evidence h3 {
-  font-size: 11px;
-  font-weight: 500;
-  margin: 0 0 8px;
-  color: #c2cde0;
+  margin-top: 12px;
 }
 .node-evidence p,
 .node-explanation p {
@@ -940,6 +955,46 @@
   color: #9fb0c8;
   overflow-wrap: anywhere;
   margin: 0;
+}
+.node-brief-failure button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 7px 9px;
+  border: 1px solid #665487;
+  border-radius: 6px;
+  background: #322748;
+  color: #e4d6ff;
+  font-size: 11px;
+  cursor: pointer;
+}
+.node-brief-failure button:hover {
+  background: #45345f;
+}
+.node-evidence .node-brief-loading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.node-brief-spinner {
+  animation: brief-spin 1s linear infinite;
+}
+.node-evidence .node-brief-result {
+  color: #e1e9f5;
+}
+.node-evidence .node-brief-error {
+  margin-top: 10px;
+  color: #f3aab6;
+}
+.node-evidence .node-caveat {
+  margin-top: 12px;
+  color: #d2bd8d;
+}
+@keyframes brief-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .node-caveat {
   font-size: 10px;
@@ -957,6 +1012,18 @@
 }
 .node-explanation p {
   padding-top: 10px;
+}
+.node-source-list {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding-left: 17px;
+  color: #b8c8dd;
+  font-size: 11px;
+  line-height: 1.65;
+}
+.node-source-list li::marker {
+  color: #a58ad7;
 }
 .node-card-actions {
   display: flex;

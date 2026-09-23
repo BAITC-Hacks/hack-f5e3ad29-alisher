@@ -44,12 +44,17 @@ export const ROLE_STYLE: Record<
 
 const number = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
 const currency = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+const percentage = new Intl.NumberFormat('ru-RU', {
+  style: 'percent',
+  maximumFractionDigits: 0,
+});
 const compact = new Intl.NumberFormat('ru-RU', {
   notation: 'compact',
   maximumFractionDigits: 1,
 });
 export const formatNumber = (value: number) => number.format(value);
 export const formatMoney = (value: number) => `${currency.format(value)} ₸`;
+export const formatPercent = (value: number) => percentage.format(value);
 export const compactMoney = (value: number) => `${compact.format(value)} ₸`;
 export const formatScore = (value: number) => value.toFixed(3);
 export const shortId = (id: string) => `…${id.slice(-7)}`;

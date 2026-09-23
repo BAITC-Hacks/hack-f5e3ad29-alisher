@@ -9,12 +9,14 @@ import {
   Expand,
   GitBranch,
   Layers3,
+  LoaderCircle,
   X,
 } from 'lucide-react';
 import {
   ROLE_STYLE,
   formatMoney,
   formatNumber,
+  formatPercent,
   formatScore,
 } from '@/lib/graph/roles';
 import type { MoneyDataset, MoneyNode } from '@/lib/graph/types';
@@ -35,6 +37,11 @@ export function NodeCard({
 }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
+  const [brief, setBrief] = useState('');
+  const [briefError, setBriefError] = useState('');
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
+  const briefRequest = useRef<AbortController | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   useEffect(() => {
@@ -49,8 +56,72 @@ export function NodeCard({
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
   }, [onClose]);
-  const cluster = dataset.clusters.find((c) => c.id === node.cluster);
+  useEffect(() => () => briefRequest.current?.abort(), []);
+  async function generateBrief() {
+    const controller = new AbortController();
+    briefRequest.current = controller;
+    setBriefLoading(true);
+    setBriefError('');
+    try {
+      const response = await fetch('/api/node-brief', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role: node.role,
+          evidence: node.evidence,
+          roleScore: node.roleScore,
+          priority: node.priority,
+          depth: node.depth,
+          isSeed: node.isSeed,
+          inAmount: node.inAmount,
+          outAmount: node.outAmount,
+          inDegree: node.inDegree,
+          outDegree: node.outDegree,
+          inTx: node.inTx,
+          outTx: node.outTx,
+          passThrough: node.passThrough,
+          seedReach: node.seedReach,
+        }),
+        signal: controller.signal,
+      });
+      const result: { brief?: string; error?: string } = await response.json();
+      if (!response.ok || !result.brief) {
+        throw new Error(result.error || 'Не удалось сформировать бриф.');
+      }
+      setBrief(result.brief);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setBriefError(
+          error instanceof Error
+            ? error.message
+            : 'Не удалось сформировать бриф.',
+        );
+      }
+    } finally {
+      if (!controller.signal.aborted) setBriefLoading(false);
+    }
+  }
+  function toggleWhy() {
+    if (!whyOpen && !brief && !briefLoading) void generateBrief();
+    setWhyOpen((open) => !open);
+  }
   const top = dataset.top.find((n) => n.id === node.id);
+  const caveats = (
+    <>
+      {node.depth === 4 && (
+        <p className="node-caveat">
+          Граница выгрузки: дальнейшие переводы не видны. Отсутствие выхода не
+          означает удержание денег.
+        </p>
+      )}
+      {node.isSeed && (
+        <p className="node-caveat">
+          У исходного узла входящие переводы неполны. Наблюдаемые суммы не
+          являются балансом счёта.
+        </p>
+      )}
+    </>
+  );
   return (
     <section
       className="node-popover"
@@ -71,11 +142,76 @@ export function NodeCard({
       </div>
       <div className="node-identity">
         <RoleSymbol role={node.role} seed={node.isSeed} large />
-        <div>
+        <div className="node-role-copy">
           <h2 id="node-card-title">{ROLE_STYLE[node.role].label}</h2>
-          <span className="muted">Гипотеза роли</span>
+          <div className="node-role-meta">
+            <span className="muted">Гипотеза роли</span>
+            {top && <span className="rank-badge">Топ {top.rank}</span>}
+          </div>
         </div>
-        {top && <span className="rank-badge">Топ {top.rank}</span>}
+        <button
+          className="node-why-button"
+          type="button"
+          aria-expanded={whyOpen}
+          aria-controls="node-role-explanation"
+          onClick={toggleWhy}
+        >
+          Почему?
+        </button>
+      </div>
+      <div
+        className="node-evidence"
+        id="node-role-explanation"
+        role="region"
+        aria-label="Объяснение роли"
+        hidden={!whyOpen}
+      >
+        {briefLoading ? (
+          <p className="node-brief-loading" role="status">
+            <LoaderCircle size={14} className="node-brief-spinner" />
+            Формируем объяснение…
+          </p>
+        ) : brief ? (
+          <p className="node-brief-result">{brief}</p>
+        ) : null}
+        {briefError && (
+          <div className="node-brief-failure">
+            <p className="node-brief-error" role="alert">
+              {briefError}
+            </p>
+            <button type="button" onClick={generateBrief}>
+              Повторить
+            </button>
+          </div>
+        )}
+        <details className="node-explanation">
+          <summary>Исходные признаки</summary>
+          <ul className="node-source-list">
+            <li>
+              Получено: {formatMoney(node.inAmount)}. Отправителей:{' '}
+              {formatNumber(node.inDegree)}; входящих переводов:{' '}
+              {formatNumber(node.inTx)}.
+            </li>
+            <li>
+              Отправлено: {formatMoney(node.outAmount)}. Получателей:{' '}
+              {formatNumber(node.outDegree)}; исходящих переводов:{' '}
+              {formatNumber(node.outTx)}.
+            </li>
+            {node.passThrough !== null && (
+              <li>
+                Исходящая сумма составляет {formatPercent(node.passThrough)} от
+                наблюдаемой входящей суммы.
+              </li>
+            )}
+            <li>
+              Связи с исходными узлами: {formatNumber(node.seedReach)}.
+              {node.isSeed
+                ? ' Узел сам входит в исходный список.'
+                : ` Число переходов от исходного узла: ${node.depth}.`}
+            </li>
+          </ul>
+          {caveats}
+        </details>
       </div>
       <div className="node-id">
         <code>{node.id}</code>
@@ -103,7 +239,7 @@ export function NodeCard({
       <div className="node-tags">
         <span>Кластер #{node.cluster}</span>
         <span>Глубина {node.depth}</span>
-        {node.isSeed && <span className="seed-tag">Seed</span>}
+        {node.isSeed && <span className="seed-tag">Исходный</span>}
       </div>
       <div className="node-score">
         <div>
@@ -152,41 +288,10 @@ export function NodeCard({
           </dd>
         </div>
         <div>
-          <dt>Достижим от seed</dt>
+          <dt>Связи с исходными узлами</dt>
           <dd>{node.seedReach}</dd>
         </div>
       </dl>
-      <div className="node-evidence">
-        <h3>Почему эта роль</h3>
-        <p>{node.evidence}</p>
-      </div>
-      {node.depth === 4 && (
-        <p className="node-caveat">
-          Граница выгрузки: дальнейшие переводы не видны. Отсутствие выхода не
-          означает удержание денег.
-        </p>
-      )}
-      {node.isSeed && (
-        <p className="node-caveat">
-          У исходного seed входящие переводы неполны. Наблюдаемые суммы не
-          являются балансом счёта.
-        </p>
-      )}
-      {top && (
-        <details className="node-explanation">
-          <summary>Объяснение места в топе</summary>
-          <p>{top.why}</p>
-        </details>
-      )}
-      {cluster && (
-        <details className="node-explanation">
-          <summary>
-            Кластер #{cluster.id} · {cluster.count} узлов
-          </summary>
-          <p>{cluster.hypothesis}</p>
-          <p>Внутренний оборот: {formatMoney(cluster.amount)}</p>
-        </details>
-      )}
       <div className="node-card-actions">
         <button onClick={onNeighbors}>
           <GitBranch size={15} /> Окружение
