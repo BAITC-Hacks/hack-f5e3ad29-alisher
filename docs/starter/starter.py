@@ -15,7 +15,7 @@
   * не рисует граф.
 
 Запуск:
-    python docs/starter/starter.py --data analysis/data --out analysis/out
+    python starter.py --data ../data --out ./out
 """
 
 import argparse
@@ -24,8 +24,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import networkx as nx
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 ROLES = ["consolidator", "transit", "distributor", "terminal", "coordinator", "peripheral"]
 
@@ -162,8 +160,8 @@ def hints(G: nx.DiGraph, df: pd.DataFrame):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default=PROJECT_ROOT / "analysis" / "data", help="папка с parquet-файлами")
-    ap.add_argument("--out", default=PROJECT_ROOT / "analysis" / "out", help="куда писать выгрузки")
+    ap.add_argument("--data", default="../data", help="папка с parquet-файлами")
+    ap.add_argument("--out", default="./out", help="куда писать выгрузки")
     a = ap.parse_args()
 
     edges, nodes, tx = load(Path(a.data))

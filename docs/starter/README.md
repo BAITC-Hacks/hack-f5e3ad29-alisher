@@ -5,12 +5,11 @@
 ## Запуск
 
 ```bash
-cd /path/to/aml
-python -m pip install -r docs/starter/requirements.txt
-python docs/starter/starter.py --data analysis/data --out analysis/out
+pip install -r requirements.txt
+python starter.py --data ../data --out ./out
 ```
 
-Отрабатывает меньше секунды. На выходе — `analysis/out/nodes_roles.csv`, `analysis/out/clusters.csv`, `analysis/out/top_nodes.csv` в схеме из ТЗ. **Роли, кластеры и приоритеты в них пустые — это ваша работа.**
+Отрабатывает меньше секунды. На выходе — `out/nodes_roles.csv`, `out/clusters.csv`, `out/top_nodes.csv` в схеме из ТЗ. **Роли, кластеры и приоритеты в них пустые — это ваша работа.**
 
 ## Что уже посчитано
 
